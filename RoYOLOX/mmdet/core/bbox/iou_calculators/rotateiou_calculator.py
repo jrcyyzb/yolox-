@@ -213,59 +213,79 @@ def rotatebbox_overlaps(bboxes1, bboxes2, mode='iou', is_aligned=False, eps=1e-6
     # area1=(bboxes1[...,2]-bboxes1[...,0])*(bboxes1[...,3]-bboxes1[...,1])
     coord1=bboxes1[...,[0,1]]
     coord2 = bboxes1[..., [2, 1]]
-    coord3 = bboxes1[..., [0, 3]]
-    coord4 = bboxes1[..., [2, 3]]
-    ons=torch.ones(rows)
+    coord3 = bboxes1[..., [2, 3]]
+    coord4 = bboxes1[..., [0, 3]]
+    ons=torch.ones(rows).unsqueeze(1).to(coord1.device)
+    # print(coord1.device,ons.device)
     coord1=torch.cat((coord1,ons),1)
     coord2 = torch.cat((coord2, ons), 1)
     coord3 = torch.cat((coord3, ons), 1)
     coord4 = torch.cat((coord4, ons), 1)
     theta=bboxes1[..., 4]
-    theta=3.1415926535*theta
-    center=(coord1+coord4)/2
-    coord=torch.cat(coord1,coord2,coord3,coord4).reshape(-1,3,4) # [bn,3,4]
-    rotate_matrix=torch.tensor([[1,1,1],[1,1,1],[0,0,1]])
-    rotate_matrix.repeat(rows,1,1) #[bn,3,3]
+    theta=3.1415926535898*theta/180
+    center=(coord1+coord3)/2
+    coord=torch.cat((coord1,coord2,coord3,coord4),1).reshape(-1,4,3).permute(0,2,1) # [bn,3,4],[[x1,y1,1],[x2,y2,1],[x3,y3,1],[x4,y4,1]]->[[x1,x2,x3,x4],[y1,y2,y3,y4],[1,1,1,1]]
+    print('coord',coord.size())
+    rotate_matrix=torch.FloatTensor([[1,1,1],[1,1,1],[0,0,1]])
+    rotate_matrix=rotate_matrix.repeat(rows,1,1) #[bn,3,3]
     cos_theta=torch.cos(theta)
     sin_theta=torch.sin(theta)
     x_c=center[..., 0]
     y_c = center[..., 1]
+    # print('rotate',rotate_matrix.size(),rotate_matrix.type(),theta.size(),coord.size(),coord.type())
     rotate_matrix[...,0,0]=cos_theta
     rotate_matrix[..., 1, 1] = cos_theta
     rotate_matrix[..., 0, 1] = -sin_theta
     rotate_matrix[..., 1, 0] = sin_theta
     rotate_matrix[..., 0, 2] = x_c - x_c * cos_theta + y_c * sin_theta
-    rotate_matrix[..., 1, 2] = y_c - x_c * cos_theta - y_c * sin_theta
+    rotate_matrix[..., 1, 2] = y_c - x_c * sin_theta - y_c * cos_theta
+    rotate_matrix=rotate_matrix.to(coord.device)
     rotate_coord=torch.bmm(rotate_matrix,coord) # [bn,3,4]
-    rotate_coord=rotate_coord[...,[0,1],:].reshape(-1,8)
-    x1=bboxes2[...,0]
-    y1 = bboxes2[..., 1]
-    x2 = bboxes2[..., 2]
-    y2 = bboxes2[..., 3]
-    x3 = bboxes2[..., 4]
-    y3 = bboxes2[..., 5]
-    x4 = bboxes2[..., 6]
-    y4 = bboxes2[..., 7]
+    # print('rotate_coord', rotate_coord.size(), 'bboxes2', bboxes2.size())
+    rotate_coord=rotate_coord[...,[0,1],:].permute(0,2,1).reshape(-1,8) #[[x1,x2,x3,x4],[y1,y2,y3,y4],[1,1,1,1]]->[[x1,y1,x2,y2,x3,y3,x4,y4]]
+    # rotate_coord=rotate_coord[...,[0,4,1,5,2,6,3,7]]
+    print('rotate_coord',rotate_coord.size(),'bboxes2',bboxes2.size())
+    # x1=bboxes2[...,0]
+    # y1 = bboxes2[..., 1]
+    # x2 = bboxes2[..., 2]
+    # y2 = bboxes2[..., 3]
+    # x3 = bboxes2[..., 4]
+    # y3 = bboxes2[..., 5]
+    # x4 = bboxes2[..., 6]
+    # y4 = bboxes2[..., 7]
+    # x1,y1,x2,y2,x3,y3,x4,y4=bboxes2.split((1,1,1,1,1,1,1,1),dim=-1)
     # area2=(x1*(y2-y4)+x2*(y3-y1)+x3*(y4-y2)+x4*(y1-y3))/2
-    area1 = (torch.max(rotate_coord[..., [0,2,4,6]]) -torch.min(rotate_coord[..., [0,2,4,6]])) * (
-        torch.max(rotate_coord[..., [1,3,5,7]]) -torch.min(rotate_coord[..., [1,3,5,7]]))
-    area2 = (torch.max(bboxes2[..., [0,2,4,6]]) -torch.min(bboxes2[..., [0,2,4,6]])) * (
-        torch.max(bboxes2[..., [1,3,5,7]]) -torch.min(bboxes2[..., [1,3,5,7]]))
-
-    asbboxes1=torch.cat((torch.min(rotate_coord[..., [0,2,4,6]]),torch.min(rotate_coord[..., [1,3,5,7]]),torch.max(rotate_coord[..., [0,2,4,6]]),torch.max(rotate_coord[..., [1,3,5,7]])),1)
-    asbboxes2 = torch.cat((torch.min(bboxes2[..., [0, 2, 4, 6]]), torch.min(bboxes2[..., [1, 3, 5, 7]]),
-                           torch.max(bboxes2[..., [0, 2, 4, 6]]), torch.max(bboxes2[..., [1, 3, 5, 7]])), 1)
+    # print(torch.max(rotate_coord[..., [0,2,4,6]],1)[0].data.size())
+    # print('maxmax',torch.max(rotate_coord[..., [0,2,4,6]],1)[0].size())
+    # print('bboxes2',bboxes2.size())
+    # area1 = (torch.max(rotate_coord[..., [0,2,4,6]],1)[0].data -torch.min(rotate_coord[..., [0,2,4,6]],1)[0].data) * (
+    #     torch.max(rotate_coord[..., [1,3,5,7]],1)[0].data -torch.min(rotate_coord[..., [1,3,5,7]],1)[0].data)
+    # area2 = (torch.max(bboxes2[..., [0,2,4,6]],1)[0].data -torch.min(bboxes2[..., [0,2,4,6]],1)[0].data) * (
+    #     torch.max(bboxes2[..., [1,3,5,7]],1)[0].data -torch.min(bboxes2[..., [1,3,5,7]],1)[0].data)
+    # print('area1',area1.size(),'area2',area2.size())
+    print(torch.min(rotate_coord[..., [0,2,4,6]],1)[0].data.size())
+    asbboxes1=torch.cat((torch.min(rotate_coord[..., [0,2,4,6]],1)[0].data.unsqueeze(1),torch.min(rotate_coord[..., [1,3,5,7]],1)[0].data.unsqueeze(1),
+                         torch.max(rotate_coord[..., [0,2,4,6]],1)[0].data.unsqueeze(1),torch.max(rotate_coord[..., [1,3,5,7]],1)[0].data.unsqueeze(1)),1)#.reshape(-1,4)
+    asbboxes2 = torch.cat((torch.min(bboxes2[..., [0, 2, 4, 6]],1)[0].data.unsqueeze(1), torch.min(bboxes2[..., [1, 3, 5, 7]],1)[0].data.unsqueeze(1),
+                           torch.max(bboxes2[..., [0, 2, 4, 6]],1)[0].data.unsqueeze(1), torch.max(bboxes2[..., [1, 3, 5, 7]],1)[0].data.unsqueeze(1)), 1)#.reshape(-1,4)
+    print('asbboxes1',asbboxes1.size())
+    area1 = (asbboxes1[..., 2] - asbboxes1[..., 0]) * (
+            asbboxes1[..., 3] - asbboxes1[..., 1])
+    area2 = (asbboxes2[..., 2] - asbboxes2[..., 0]) * (
+            asbboxes2[..., 3] - asbboxes2[..., 1])
     lt = torch.max(asbboxes1[..., :, None, :2],
                    asbboxes2[..., None, :, :2])  # [B, rows, cols, 2]
     rb = torch.min(asbboxes1[..., :, None, 2:],
                    asbboxes2[..., None, :, 2:])  # [B, rows, cols, 2]
-
+    print('lt',lt.size(),'rb',rb.size())
     wh = fp16_clamp(rb - lt, min=0)
     overlap = wh[..., 0] * wh[..., 1]
     union = area1[..., None] + area2[..., None, :] - overlap
+    print('overlap',overlap.size(),'union',union.size())
     # r1 = cv2.rotatedRectangleIntersection(rect2, rect1)
     # area = cv2.contourArea(r1[1])
     # L1loss can also be calculated,min[1,2,3,4]
+    # print(overlap/union)
     return overlap/union# ious
     # if is_aligned:
     #     lt = torch.max(bboxes1[..., :2], bboxes2[..., :2])  # [B, rows, 2]
