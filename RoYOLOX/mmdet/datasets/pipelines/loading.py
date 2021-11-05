@@ -591,13 +591,13 @@ class LoadPolygonAnnotations:
         """
 
         ann_info = results['ann_info']
-        results['gt_polygons'] = ann_info['polygons'].copy()
-
+        results['gt_bboxes'] = ann_info['bboxes'].copy()
+        # print(results['gt_bboxes'])
         # gt_bboxes_ignore = ann_info.get('bboxes_ignore', None)
         # if gt_bboxes_ignore is not None:
         #     results['gt_bboxes_ignore'] = gt_bboxes_ignore.copy()
         #     results['bbox_fields'].append('gt_bboxes_ignore')
-        results['polygons_fields'].append('gt_polygons')
+        results['bbox_fields'].append('gt_bboxes')  # its polygon but use this key
         return results
 
     def _load_labels(self, results):

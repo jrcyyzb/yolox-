@@ -87,8 +87,9 @@ class RandomRotate:
             borderValue=self.border_val)
         results['img'] = img
         results['img_shape'] = img.shape
+        # print(results['img_info'])
 
-        for key in results.get('polygons_fields', []):
+        for key in results.get('bbox_fields', []):
             polygons = results[key]
             num_polygons = len(polygons)
             if num_polygons:
@@ -105,8 +106,9 @@ class RandomRotate:
                 xs = warp_points[0] # [x1,x2,x3,...]
                 ys = warp_points[1] # [y1,y2,y3,...]
                 warp_polygons=np.zeros(num_polygons*8)
-                warp_polygons[0:-1:2]=xs
-                warp_polygons[1:-1:2]=ys
+                # print(warp_polygons.size,xs.size)
+                warp_polygons[0::2]=xs
+                warp_polygons[1::2]=ys
                 warp_polygons=warp_polygons.reshape(num_polygons,8)
                 # warp_polygons=[(x/width,y/height) for x in xs for y in ys] #and normalization
                 # warp_polygons=np.float32(np.array(warp_polygons)).reshape(num_polygons, 4) # [[(x1,y1),(x2,y2),(x3,y3),(x4,y4)],...]
@@ -167,7 +169,9 @@ class RandomRotate:
                 warp_polygons[:,[1,3,5,7]]=warp_polygons[:,[1,3,5,7]].clip(0,height)
                 # filter polygons #
                 valid_index = self.filter_gt_ploygons(polygons,warp_polygons)
-                results[key] = warp_bboxes[valid_index]
+                # print(valid_index)
+                valid_index=np.repeat(valid_index,2,axis=1)
+                results[key] = warp_polygons[valid_index]
                 if key in ['gt_polygons']:
                     if 'gt_labels' in results:
                         results['gt_labels'] = results['gt_labels'][
@@ -175,14 +179,14 @@ class RandomRotate:
         return results
 
     def filter_gt_ploygons(self, origin_polygons,wrapped_polygons):
-        origin_w = np.maximum(polygons[:, [0, 2, 4, 6]]) - np.minimum(polygons[:, [0, 2, 4, 6]])
-        origin_h = np.maximum(polygons[:, [1, 3, 5, 7]]) - np.minimum(polygons[:, [1, 3, 5, 7]])
+        origin_w = np.maximum(origin_polygons[:, [0, 2, 4, 6]],1) - np.minimum(origin_polygons[:, [0, 2, 4, 6]],1)
+        origin_h = np.maximum(origin_polygons[:, [1, 3, 5, 7]],1) - np.minimum(origin_polygons[:, [1, 3, 5, 7]],1)
         # origin_w = origin_bboxes[:, 2] - origin_bboxes[:, 0]
         # origin_h = origin_bboxes[:, 3] - origin_bboxes[:, 1]
         # wrapped_w = wrapped_bboxes[:, 2] - wrapped_bboxes[:, 0]
         # wrapped_h = wrapped_bboxes[:, 3] - wrapped_bboxes[:, 1]
-        wrapped_w=np.maximum(wrapped_polygons[:,[0,2,4,6]])-np.minimum(wrapped_polygons[:,[0,2,4,6]])
-        wrapped_h=np.maximum(wrapped_polygons[:,[1,3,5,7]])-np.minimum(wrapped_polygons[:,[1,3,5,7]])
+        wrapped_w=np.maximum(wrapped_polygons[:,[0,2,4,6]],1)-np.minimum(wrapped_polygons[:,[0,2,4,6]],1)
+        wrapped_h=np.maximum(wrapped_polygons[:,[1,3,5,7]],1)-np.minimum(wrapped_polygons[:,[1,3,5,7]],1)
         # aspect_ratio = np.maximum(wrapped_w / (wrapped_h + 1e-16),
         #                           wrapped_h / (wrapped_w + 1e-16))
         wh_valid_idx = (wrapped_w > self.min_bbox_size) & \

@@ -22,7 +22,7 @@ class DOTADataset(CustomDataset):
                 'harbor', 'swimming-pool',
                 'helicopter', 'container-crane')
 
-    def __init__(self,img_subdir='images',ann_subdir='split_train/labelTxt',**kwargs):
+    def __init__(self,img_subdir='images',ann_subdir='split_val/labelTxt',**kwargs):
         super(DOTADataset, self).__init__(**kwargs)
         self.img_subdir=img_subdir
         self.ann_subdir=ann_subdir
@@ -33,6 +33,8 @@ class DOTADataset(CustomDataset):
         img_paths = mmcv.list_from_file(ann_file)
         for img_id,img_path in enumerate(img_paths):
             # img_path = osp.join(self.img_prefix,self.img_subdir, f'{img_id}.jpg')
+            if img_path is None:
+                continue
             filename=img_path.split('/')[-1] #.split('.')[0]
             img = Image.open(img_path)
             width, height = img.size
@@ -43,7 +45,9 @@ class DOTADataset(CustomDataset):
     def get_ann_info(self, idx):
         # img_id=self.data_infos[idx]['id']
         img_name=self.data_infos[idx]['filename'].split('.')[0]
+        # print(img_name)
         txt_path = osp.join(self.data_root, self.ann_subdir, f'{img_name}.txt')
+        # print(txt_path)
         polygons = []
         labels = []
         difficult=[]
@@ -54,7 +58,7 @@ class DOTADataset(CustomDataset):
             labels.append(int(self.cat2label[ann[8]]))
             difficult.append(int(ann[9]))
         ann = dict(
-            polygons= np.array(polygons, dtype=np.float32),
+            bboxes= np.array(polygons, dtype=np.float32),
             labels=np.array(labels, dtype=np.int64),
-            difficult=np.array(difficult, dtype=np.int64))
+            bboxes_ignore=np.array(difficult, dtype=np.int64))
         return ann
