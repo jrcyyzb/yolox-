@@ -1,5 +1,6 @@
 _base_ = ['../_base_/schedules/schedule_1x.py', '../_base_/default_runtime.py']
 
+workflow = [('train', 1)]
 # model settings
 model = dict(
     type='YOLOX',
@@ -14,7 +15,7 @@ model = dict(
     train_cfg=dict(assigner=dict(type='rotate_SimOTAAssigner', center_radius=2.5)),
     # In order to align the source code, the threshold of the val phase is
     # 0.01, and the threshold of the test phase is 0.001.
-    test_cfg=dict(score_thr=0.01, nms=dict(type='nms', iou_threshold=0.65)))
+    test_cfg=dict(score_thr=0.01, nms=dict(type='nms_rotated', iou_threshold=0.65)))
 
 # dataset settings
 data_root = '/home/adminstrator/下载/DOTA-masters/DOTA/'
@@ -26,11 +27,13 @@ img_norm_cfg = dict(
 img_scale = (640, 640)
 
 train_pipeline = [
+    # dict(type='LoadImageFromFile'),
+    # dict(type='LoadPolygonAnnotations'),
     # dict(type='Mosaic', img_scale=img_scale, pad_val=114.0),
-    dict(
-        type='RandomRotate',
-        scaling_ratio_range=(0.1, 2),
-        border=(-img_scale[0] // 2, -img_scale[1] // 2)),
+    # dict(
+    #     type='RandomRotate',
+    #     scaling_ratio_range=(0.1, 2),
+    #     border=(-img_scale[0] // 2, -img_scale[1] // 2)),
     # dict(
     #     type='MixUp',
     #     img_scale=img_scale,
@@ -42,8 +45,8 @@ train_pipeline = [
         contrast_range=(0.5, 1.5),
         saturation_range=(0.5, 1.5),
         hue_delta=18),
-    # dict(type='RandomFlip', flip_ratio=0.5),
-    dict(type='Resize', keep_ratio=True),
+    # dict(type='RandomFlip', flip_ratio=0),
+    # dict(type='Resize', keep_ratio=True),
     dict(type='Pad', pad_to_square=True, pad_val=114.0),
     dict(type='Normalize', **img_norm_cfg),
     dict(type='DefaultFormatBundle'),
@@ -54,11 +57,12 @@ train_dataset = dict(
     type='MultiImageMixDataset',
     dataset=dict(
         type=dataset_type,
-        ann_file=data_root + 'split_train/train.txt',
-        img_prefix=data_root + 'split_train/images/',
+        ann_file=data_root + 'split_val/val.txt',
+        img_prefix=data_root + 'split_val/images/',
+        data_root=data_root,
         pipeline=[
             dict(type='LoadImageFromFile', to_float32=True),
-            dict(type='LoadAnnotations', with_bbox=True)
+            dict(type='LoadPolygonAnnotations')
         ],
         filter_empty_gt=False,
     ),
@@ -82,18 +86,21 @@ test_pipeline = [
 ]
 
 data = dict(
-    samples_per_gpu=8,
-    workers_per_gpu=2,
+    samples_per_gpu=1,
+    workers_per_gpu=1,
     train=train_dataset,
     val=dict(
         type=dataset_type,
+
         ann_file=data_root + 'split_val/val.txt',
         img_prefix=data_root + 'split_val/images/',
+        data_root=data_root,
         pipeline=test_pipeline),
     test=dict(
         type=dataset_type,
         ann_file=data_root + 'split_val/val.txt',
         img_prefix=data_root + 'split_val/images/',
+        data_root=data_root,
         pipeline=test_pipeline))
 
 # optimizer
@@ -121,7 +128,7 @@ lr_config = dict(
 runner = dict(type='EpochBasedRunner', max_epochs=300)
 
 resume_from = None
-interval = 10
+interval = 100
 
 custom_hooks = [
     dict(type='YOLOXModeSwitchHook', num_last_epochs=15, priority=48),
@@ -139,72 +146,10 @@ custom_hooks = [
     dict(type='ExpMomentumEMAHook', resume_from=resume_from, priority=49)
 ]
 checkpoint_config = dict(interval=interval)
-evaluation = dict(interval=interval, metric='bbox')
+evaluation = dict(interval=interval, metric='mAP')
 log_config = dict(interval=50)
 
-load_from='checkpoints/yolox_s.pth'
-# dataset_A_train = dict(
-#         # type='RepeatDataset',
-#         # times=N,
-#         # type='ClassBalancedDataset',
-#         # oversample_thr=1e-3,
-#         dataset=dict(  # This is the original config of Dataset_A
-#             type='DOTADataset',
-#             ann_file = 'train.txt',
-#             pipeline=train_pipeline
-#         )
-#     )
-# dataset_A_train = dict(
-#     type='DOTADataset',
-#     ann_file = 'train.txt',
-#     pipeline=train_pipeline
-# )
-
-# img_norm_cfg = dict(
-#     mean=[123.675, 116.28, 103.53], std=[58.395, 57.12, 57.375], to_rgb=True)
-# train_pipeline = [
-#     dict(type='LoadImageFromFile'),
-#     dict(type='LoadAnnotations', with_bbox=True),
-#     dict(type='Resize', img_scale=(1333, 800), keep_ratio=True),
-#     dict(type='RandomFlip', flip_ratio=0.5),
-#     dict(type='Normalize', **img_norm_cfg),
-#     dict(type='Pad', size_divisor=32),
-#     dict(type='DefaultFormatBundle'),
-#     dict(type='Collect', keys=['img', 'gt_bboxes', 'gt_labels']),
-# ]
-# test_pipeline = [
-#     dict(type='LoadImageFromFile'),
-#     dict(
-#         type='MultiScaleFlipAug',
-#         img_scale=(1333, 800),
-#         flip=False,
-#         transforms=[
-#             dict(type='Resize', keep_ratio=True),
-#             dict(type='RandomFlip'),
-#             dict(type='Normalize', **img_norm_cfg),
-#             dict(type='Pad', size_divisor=32),
-#             dict(type='ImageToTensor', keys=['img']),
-#             dict(type='Collect', keys=['img']),
-#         ])
-# ]
-#
-# data = dict(
-#     samples_per_gpu=8,
-#     workers_per_gpu=2,
-#     train=train_dataset,
-#     val=dict(
-#         type=dataset_type,
-#         ann_file=data_root + 'annotations/instances_val2017.json',
-#         img_prefix=data_root + 'val2017/',
-#         pipeline=test_pipeline),
-#     test=dict(
-#         type=dataset_type,
-#         ann_file=data_root + 'annotations/instances_val2017.json',
-#         img_prefix=data_root + 'val2017/',
-#         pipeline=test_pipeline))
-#
-# ann_file=''
-
+load_from='/home/adminstrator/下载/open-mmlab/RoYOLOX/checkpoints/epoch_10.pth'
 CLASSES = ('plane', 'baseball-diamond',
                 'bridge', 'ground-track-field',
                 'small-vehicle', 'large-vehicle',
