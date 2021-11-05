@@ -6,9 +6,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 from mmcv.cnn import (ConvModule, DepthwiseSeparableConvModule,
                       bias_init_with_prob)
-from mmcv.ops.nms import batched_nms
+from mmcv.ops.nms import batched_nms, nms_rotated
 
-from mmdet.core import (MlvlPointGenerator, bbox_xyxy_to_cxcywh,
+from mmdet.core import (MlvlPointGenerator, bbox_xyxy_to_cxcywh, bbox_xyxyr_to_cxcywhr,
                         build_assigner, build_sampler, multi_apply)
 from ..builder import HEADS, build_loss
 from .base_dense_head import BaseDenseHead
@@ -75,7 +75,7 @@ class rotate_YOLOXHead(BaseDenseHead, BBoxTestMixin):
                      use_sigmoid=True,
                      reduction='sum',
                      loss_weight=1.0),
-                 loss_l1=dict(type='L1Loss', reduction='sum', loss_weight=1.0),
+                 loss_l1=dict(type='rotate_L1Loss', reduction='sum', loss_weight=3.0),
                  train_cfg=None,
                  test_cfg=None,
                  init_cfg=dict(
@@ -107,7 +107,8 @@ class rotate_YOLOXHead(BaseDenseHead, BBoxTestMixin):
         self.loss_bbox = build_loss(loss_bbox)
         self.loss_obj = build_loss(loss_obj)
 
-        self.use_l1 = False  # This flag will be modified by hooks.
+        self.use_l1 = False   # This flag will be modified by hooks.
+        # self.use_l1 = True
         self.loss_l1 = build_loss(loss_l1)
 
         self.prior_generator = MlvlPointGenerator(strides, offset=0)
@@ -259,7 +260,7 @@ class rotate_YOLOXHead(BaseDenseHead, BBoxTestMixin):
             for cls_score in cls_scores
         ]
         flatten_bbox_preds = [
-            bbox_pred.permute(0, 2, 3, 1).reshape(num_imgs, -1, 4)
+            bbox_pred.permute(0, 2, 3, 1).reshape(num_imgs, -1, 5)
             for bbox_pred in bbox_preds
         ]
         flatten_objectness = [
@@ -297,7 +298,7 @@ class rotate_YOLOXHead(BaseDenseHead, BBoxTestMixin):
         tl_y = (xys[..., 1] - whs[..., 1] / 2)
         br_x = (xys[..., 0] + whs[..., 0] / 2)
         br_y = (xys[..., 1] + whs[..., 1] / 2)
-        theta=bbox_preds[..., 4]*180
+        theta=bbox_preds[..., 4]*90
         decoded_bboxes = torch.stack([tl_x, tl_y, br_x, br_y,theta], -1)
         return decoded_bboxes
 
@@ -313,6 +314,7 @@ class rotate_YOLOXHead(BaseDenseHead, BBoxTestMixin):
             return bboxes, labels
         else:
             dets, keep = batched_nms(bboxes, scores, labels, cfg.nms)
+            # dets, keep = nms_rotated(bboxes, scores, cfg.nms['iou_threshold'], labels) # attention, its changed
             return dets, labels[keep]
 
     def loss(self,
@@ -346,7 +348,7 @@ class rotate_YOLOXHead(BaseDenseHead, BBoxTestMixin):
         featmap_sizes = [cls_score.shape[2:] for cls_score in cls_scores]
         mlvl_priors = self.prior_generator.grid_priors(
             featmap_sizes, cls_scores[0].device, with_stride=True)
-
+        # print(len(bbox_preds))
         flatten_cls_preds = [
             cls_pred.permute(0, 2, 3, 1).reshape(num_imgs, -1,
                                                  self.cls_out_channels)
@@ -367,7 +369,8 @@ class rotate_YOLOXHead(BaseDenseHead, BBoxTestMixin):
         flatten_priors = torch.cat(mlvl_priors)
         flatten_bboxes = self._bbox_decode(flatten_priors, flatten_bbox_preds)
 
-        (pos_masks, cls_targets, obj_targets, bbox_targets, l1_targets,
+        print('\nflatten_priors',flatten_priors.size(),flatten_bbox_preds.size(),'\nflatten_bboxes',flatten_bboxes.size())
+        (pos_masks, cls_targets, obj_targets, bbox_targets,# l1_targets,
          num_fg_imgs) = multi_apply(
              self._get_target_single, flatten_cls_preds.detach(),
              flatten_objectness.detach(),
@@ -379,8 +382,10 @@ class rotate_YOLOXHead(BaseDenseHead, BBoxTestMixin):
         cls_targets = torch.cat(cls_targets, 0)
         obj_targets = torch.cat(obj_targets, 0)
         bbox_targets = torch.cat(bbox_targets, 0)
-        if self.use_l1:
-            l1_targets = torch.cat(l1_targets, 0)
+        print(pos_masks.size(),obj_targets.size(),cls_targets.size(),bbox_targets.size())
+        # print(bbox_targets)
+        # if self.use_l1:
+        #     l1_targets = torch.cat(l1_targets, 0) # its not used,we use polygon target
 
         loss_bbox = self.loss_bbox(
             flatten_bboxes.view(-1, 5)[pos_masks],
@@ -396,8 +401,8 @@ class rotate_YOLOXHead(BaseDenseHead, BBoxTestMixin):
 
         if self.use_l1:
             loss_l1 = self.loss_l1(
-                flatten_bbox_preds.view(-1, 4)[pos_masks],
-                l1_targets) / num_total_samples
+                flatten_bbox_preds.view(-1, 5)[pos_masks],
+                bbox_targets) / num_total_samples
             loss_dict.update(loss_l1=loss_l1)
 
         return loss_dict
@@ -429,12 +434,12 @@ class rotate_YOLOXHead(BaseDenseHead, BBoxTestMixin):
         # No target
         if num_gts == 0:
             cls_target = cls_preds.new_zeros((0, self.num_classes))
-            bbox_target = cls_preds.new_zeros((0, 4))
-            l1_target = cls_preds.new_zeros((0, 4))
+            bbox_target = cls_preds.new_zeros((0, 5))
+            # l1_target = cls_preds.new_zeros((0, 4))
             obj_target = cls_preds.new_zeros((num_priors, 1))
             foreground_mask = cls_preds.new_zeros(num_priors).bool()
-            return (foreground_mask, cls_target, obj_target, bbox_target,
-                    l1_target, 0)
+            return (foreground_mask, cls_target, obj_target, bbox_target,#l1_target,
+                    0)
 
         # YOLOX uses center priors with 0.5 offset to assign targets,
         # but use center priors without offset to regress bboxes.
@@ -449,6 +454,7 @@ class rotate_YOLOXHead(BaseDenseHead, BBoxTestMixin):
 
         sampling_result = self.sampler.sample(assign_result, priors, gt_bboxes)
         pos_inds = sampling_result.pos_inds
+        print('pos_inds',pos_inds.size(),pos_inds)
         num_pos_per_img = pos_inds.size(0)
 
         pos_ious = assign_result.max_overlaps[pos_inds]
@@ -458,18 +464,20 @@ class rotate_YOLOXHead(BaseDenseHead, BBoxTestMixin):
         obj_target = torch.zeros_like(objectness).unsqueeze(-1)
         obj_target[pos_inds] = 1
         bbox_target = sampling_result.pos_gt_bboxes
-        l1_target = cls_preds.new_zeros((num_pos_per_img, 4))
-        if self.use_l1:
-            l1_target = self._get_l1_target(l1_target, bbox_target,
-                                            priors[pos_inds])
+        # print(bbox_target)
+        # l1_target = cls_preds.new_zeros((num_pos_per_img, 5))
+        # if self.use_l1:
+        #     l1_target = self._get_l1_target(l1_target, bbox_target,
+        #                                     priors[pos_inds])
         foreground_mask = torch.zeros_like(objectness).to(torch.bool)
         foreground_mask[pos_inds] = 1
-        return (foreground_mask, cls_target, obj_target, bbox_target,
-                l1_target, num_pos_per_img)
+        return (foreground_mask, cls_target, obj_target, bbox_target,#l1_target,
+                num_pos_per_img)
 
-    def _get_l1_target(self, l1_target, gt_bboxes, priors, eps=1e-8):
-        """Convert gt bboxes to center offset and log width height."""
-        gt_cxcywh = bbox_xyxy_to_cxcywh(gt_bboxes)
-        l1_target[:, :2] = (gt_cxcywh[:, :2] - priors[:, :2]) / priors[:, 2:]
-        l1_target[:, 2:] = torch.log(gt_cxcywh[:, 2:] / priors[:, 2:] + eps)
-        return l1_target
+    # def _get_l1_target(self, l1_target, gt_bboxes, priors, eps=1e-8):
+    #     """Convert gt bboxes to center offset and log width height."""
+    #     gt_cxcywhr = bbox_xyxyr_to_cxcywhr(gt_bboxes)
+    #     l1_target[:, :2] = (gt_cxcywhr[:, :2] - priors[:, :2]) / priors[:, 2:]
+    #     l1_target[:, 2:4] = torch.log(gt_cxcywhr[:, 2:4] / priors[:, 2:] + eps)
+    #     l1_target[:,4]=gt_cxcywhr[:,5]
+    #     return l1_target
