@@ -3,6 +3,7 @@ import math
 import warnings
 
 import mmcv
+import numpy as np
 import torch
 import torch.nn as nn
 
@@ -10,7 +11,7 @@ import torch.nn as nn
 from mmdet.core import rotatebbox_overlaps
 from ..builder import LOSSES
 from .utils import weighted_loss
-# from shapely.geometry import Polygon
+import cv2
 
 
 @mmcv.jit(derivate=True, coderize=True)
@@ -420,6 +421,192 @@ class roLoss(nn.Module):
             **kwargs)
         return loss
 
+
+@LOSSES.register_module()
+class FGLoss(nn.Module):
+    """FGLoss.
+
+    Computing the Fourlier loss between a set of predicted robboxes and target robboxes.
+
+    Args:
+        linear (bool): If True, use linear scale of loss else determined
+            by mode. Default: False.
+        eps (float): Eps to avoid log(0).
+        reduction (str): Options are "none", "mean" and "sum".
+        loss_weight (float): Weight of loss.
+        mode (str): Loss scaling mode, including "linear", "square", and "log".
+            Default: 'log'
+    """
+
+    def __init__(self,
+                 linear=False,
+                 eps=1e-6,
+                 reduction='mean',
+                 loss_weight=1.0,
+                 mode='log'):
+        super(FGLoss, self).__init__()
+        assert mode in ['linear', 'square', 'log']
+        if linear:
+            mode = 'linear'
+            warnings.warn('DeprecationWarning: Setting "linear=True" in '
+                          'IOULoss is deprecated, please use "mode=`linear`" '
+                          'instead.')
+        self.mode = mode
+        self.linear = linear
+        self.eps = eps
+        self.reduction = reduction
+        self.loss_weight = loss_weight
+
+    def forward(self,
+                pred,
+                target,
+                weight=None,
+                avg_factor=None,
+                reduction_override=None,
+                **kwargs):
+        """Forward function.
+
+        Args:
+            pred (torch.Tensor): The prediction.
+            target (torch.Tensor): The learning target of the prediction.
+            weight (torch.Tensor, optional): The weight of loss for each
+                prediction. Defaults to None.
+            avg_factor (int, optional): Average factor that is used to average
+                the loss. Defaults to None.
+            reduction_override (str, optional): The reduction method used to
+                override the original reduction method of the loss.
+                Defaults to None. Options are "none", "mean" and "sum".
+        """
+        # assert reduction_override in (None, 'none', 'mean', 'sum')
+        # reduction = (
+        #     reduction_override if reduction_override else self.reduction)
+        # if (weight is not None) and (not torch.any(weight > 0)) and (
+        #         reduction != 'none'):
+        #     if pred.dim() == weight.dim() + 1:
+        #         weight = weight.unsqueeze(1)
+        #     return (pred * weight).sum()  # 0
+        # if weight is not None and weight.dim() > 1:
+        #     # TODO: remove this in the future
+        #     # reduce the weight of shape (n, 4) to (n,) to match the
+        #     # iou_loss of shape (n,)
+        #     assert weight.shape == pred.shape
+        #     weight = weight.mean(-1)
+        loss = self.loss_weight * fg_loss(
+            pred,
+            target,
+            weight,
+            mode=self.mode,
+            eps=self.eps,
+            # reduction=reduction,
+            avg_factor=avg_factor,
+            **kwargs)
+        return loss
+
+@mmcv.jit(derivate=True, coderize=True)
+@weighted_loss
+def fg_loss(pred, target, linear=False, mode='log', eps=1e-6):
+    pi=3.1415926535898
+    pred_center=(pred[...,[0,1]]+pred[...,[2,3]])/2
+    # print(pred_center.size())
+    pred_w=pred[...,[2]]-pred[...,[0]]
+    pred_h=pred[...,[3]]-pred[...,[1]]
+    pred_theta=pi*pred[...,[4]]/180
+    targets=target.reshape(-1,4,2).numpy()
+    rects=[]
+    for polygon in targets:
+        rect = cv2.minAreaRect(polygon) #((cx,cy),(w,h),angle)
+        rect=[rect[0][0],rect[0][1],rect[1][0],rect[1][1],rect[2]]
+        rects.append(rect)
+        # rects=np.concatenate((rects,rect),0)
+    print(rects)
+    rects=torch.tensor(rects)
+    # print(rects)
+    # np.array()
+    target_center=rects[...,[0,1]]
+    # print(target_center)
+
+    target_w=rects[...,[2]]
+    target_h=rects[...,[3]]
+    target_theta=pi*rects[...,[4]]/180
+    # x_c - x_c * cos_theta + y_c * sin_theta
+    # y_c - x_c * sin_theta - y_c * cos_theta
+    pred_cos=torch.cos(pred_theta)
+    pred_sin = torch.sin(pred_theta)
+    target_cos = torch.cos(target_theta)
+    target_sin = torch.sin(target_theta)
+    pred_cos=pred_cos.unsqueeze(2)
+    pred_sin=pred_sin.unsqueeze(2)
+    target_cos=target_cos.unsqueeze(2)
+    target_sin=target_sin.unsqueeze(2)
+    # u = torch.arange(-32, 32, 1)
+    # v = torch.arange(-32, 32, 1)
+    u=torch.linspace(-0.5, 0.5, 32)
+    v = torch.linspace(-0.5, 0.5, 32)
+    # u = torch.arange(-64, 64, 1)
+    # v = torch.arange(-64, 64, 1)
+    # u = torch.arange(-128, 128, 1)
+    # v = torch.arange(-128, 128, 1)
+    # u = torch.arange(-256, 256, 1)
+    # v = torch.arange(-256, 256, 1)
+    u=u.unsqueeze(0)
+    v=v.unsqueeze(1)
+    # print(pred_cos,'\n',target_cos)
+    ro_u=pred_cos*u+pred_sin*v
+    ro_v=-pred_sin*u+pred_cos*v
+    # print(ro_v)
+    target_u=target_cos*u+target_sin*v
+    target_v=-target_sin*u+target_cos*v
+    # print(target_u)
+    pred_w=pred_w.unsqueeze(2)
+    pred_h=pred_h.unsqueeze(2)
+    target_w=target_w.unsqueeze(2)
+    target_h=target_h.unsqueeze(2)
+    a=torch.sin(pi * ro_u * pred_w) / (pi * ro_u * pred_w+eps)
+    b=torch.sin(pi * ro_v * pred_h) / (pi * ro_v * pred_h+eps)
+    c=torch.sin(pi * target_u * target_w) / (pi * target_u * target_w+eps)
+    d=torch.sin(pi * target_v * target_h) / (pi * target_v * target_h+eps)
+    # e = torch.sin(pi * u * target_w) / (pi * u * target_w+eps)
+    # f = torch.sin(pi * v * target_h) / (pi * v * target_h+eps)
+    # a=a.unsqueeze(2)
+    # b=b.unsqueeze(1)
+    # c=c.unsqueeze(2)
+    # d=d.unsqueeze(1)
+    # e=e.unsqueeze(2)
+    # f=f.unsqueeze(1)
+    pred_fmap =a*b
+    target_fmap =c*d
+    # pred_fmap=torch.bmm(a, b)
+    # target_fmap=torch.bmm(c,d)
+    # test_fmap=torch.bmm(e,f)
+    # 方法2：plt.imshow(ndarray)
+    # img = image[0]  # plt.imshow()只能接受3-D Tensor，所以也要用image[0]消去batch那一维
+    img2 = target_fmap[0].unsqueeze(0).numpy()  # FloatTensor转为ndarray
+    img2 = np.transpose(img2, (1, 2, 0))  # 把channel那一维放到最后
+    img1 = pred_fmap[0].unsqueeze(0).numpy()  # FloatTensor转为ndarray
+    img1 = np.transpose(img1, (1, 2, 0))  # 把channel那一维放到最后
+    # img3 = test_fmap.numpy()  # FloatTensor转为ndarray
+    # img3 = np.transpose(img3, (1, 2, 0))  # 把channel那一维放到最后
+    # 显示图片
+    # plt.imshow(img3)  #test
+    # plt.show()
+    plt.subplot(1, 2, 1)
+    plt.imshow(img1)  #pred
+    # plt.show()
+    plt.subplot(1, 2, 2)
+    plt.imshow(img2)  #target
+    plt.show()
+    # print(torch.sum(torch.sum(torch.sum(torch.abs(pred_fmap), 0), 0),0))
+    # print(torch.sum(torch.sum(torch.sum(torch.abs(target_fmap), 0), 0), 0))
+    lossmap= pred_fmap- \
+             target_fmap
+    # print(torch.isnan(temp_loss))
+    loss1=torch.sum(torch.sum(torch.sum(torch.abs(lossmap), 0), 0),0)
+    # print(loss1)
+    loss2=torch.sum(torch.sum(torch.abs(pred_center-target_center),0),0)
+    # print(loss2)
+    loss=loss1+loss2
+
+    return loss
 
 # @LOSSES.register_module()
 # class BoundedIoULoss(nn.Module):
